@@ -21,9 +21,15 @@ import de.cenote.jasperstarter.types.DsType;
 import de.cenote.jasperstarter.types.Dest;
 import de.cenote.jasperstarter.types.OutputFormat;
 import de.cenote.tools.classpath.ApplicationClasspath;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.List;
@@ -39,7 +45,6 @@ import net.sourceforge.argparse4j.inf.Argument;
 import net.sourceforge.argparse4j.inf.ArgumentGroup;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.FeatureControl;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
 import net.sourceforge.argparse4j.inf.Subparsers;
@@ -53,37 +58,110 @@ import org.apache.commons.io.filefilter.WildcardFileFilter;
  */
 public class App {
 
+    /**
+     * Application method to run the server runs in an infinite loop
+     * listening on port 9898.  When a connection is requested, it
+     * spawns a new thread to do the servicing and immediately returns
+     * to listening.  The server keeps a unique client number for each
+     * client that connects just to show interesting logging
+     * messages.  It is certainly not necessary to do this.
+	 * @param args
+	 * @throws java.lang.Exception
+     */
+    public static void main(String[] args) throws Exception {
+        int clientNumber = 0;
+		int port = 9898;
+		InetAddress bind = InetAddress.getLocalHost();
+		if( args.length > 0 )
+			port = Integer.parseInt(args[0]);
+		if( args.length > 1 )
+			bind = InetAddress.getByName(args[1]);
+		
+        ServerSocket listener = new ServerSocket(port, 0, bind);
+		System.out.println("JasperStarter server running "+listener.toString());
+        try {
+            while (true) {
+                new App.ConnectionThread(listener.accept(), clientNumber++).start();
+            }
+        } finally {
+            listener.close();
+        }
+    }
+	
+	    /**
+     * A private thread to handle capitalization requests on a particular
+     * socket.  The client terminates the dialogue by sending a single line
+     */
+    private static class ConnectionThread extends Thread {
+        private Socket socket;
+        private int clientNumber;
+
+        public ConnectionThread(Socket socket, int clientNumber) {
+            this.socket = socket;
+            this.clientNumber = clientNumber;
+            System.out.println("New connection with client# " + clientNumber + " at " + socket);
+        }
+
+        /**
+         * Services this thread's client by reading a command line string
+         * and sending back the success of operation.
+         */
+        public void run() {
+            try {
+	            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+	            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+
+				while( true ) {
+					String input = in.readLine();
+					if( input == null || input.isEmpty() )
+						break;
+					
+					String[] arguments=input.split(" ");
+					System.out.println("Client #"+clientNumber+" invoked command:" + input);
+					
+					App.process(arguments, out);
+				}
+				
+            } catch (IOException e) {
+                System.out.println("Error handling client# " + clientNumber + ": " + e);
+			} catch (Exception e) {
+				System.out.println("Error handling request from client# " + clientNumber + ": " + e);
+            } finally {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    System.out.println("Couldn't close a socket, what's going on?");
+                }
+                System.out.println("Connection with client# " + clientNumber + " closed");
+            }
+        }
+    }
+
     private Namespace namespace = null;
     private Map<String, Argument> allArguments = null;
+	private PrintWriter out = null;
 
+	public App( PrintWriter outputStream ) {
+		out = outputStream;
+	}
+	
+	public App() {
+		out = new PrintWriter( System.out );
+	}
+	
     /**
      * @param args the command line arguments
+	 * @param out
+	 * @throws java.lang.Exception
      */
-    public static void main(String[] args) {
+    public static void process(String[] args, PrintWriter out) throws Exception {
         Config config = new Config();
-        App app = new App();
+        App app = new App(out);
         // create the command line parser
         ArgumentParser parser = app.createArgumentParser(config);
-        if (args.length == 0) {
-            System.out.println(parser.formatUsage());
-            System.out.println("type: jasperstarter -h to get help");
-            System.exit(0);
-        }
-        try {
-            app.parseArgumentParser(args, parser, config);
-        } catch (ArgumentParserException ex) {
-            parser.handleError(ex);
-            System.exit(1);
-        }
-        if (config.isVerbose()) {
-            System.out.print("Command line:");
-            for (String arg : args) {
-                System.out.print(" " + arg);
-            }
-            // @todo: this makes sense only if Config.toString() is overwitten
-//            System.out.print("\n");
-//            System.out.println(config);
-        }
+        if (args.length == 0) 
+			throw new Exception("Empty arguments list");
+        app.parseArgumentParser(args, parser, config);
 
         // @todo: main() will not be executed in tests...
         // setting locale if given
@@ -91,37 +169,26 @@ public class App {
             Locale.setDefault(config.getLocale());
         }
 
-        try {
-            switch (Command.getCommand(config.getCommand())) {
-                case COMPILE:
-                case CP:
-                    app.compile(config);
-                    break;
-                case PROCESS:
-                case PR:
-                    app.processReport(config);
-                    break;
-                case LIST_PRINTERS:
-                case PRINTERS:
-                case LPR:
-                    app.listPrinters();
-                    break;
-                case LIST_PARAMETERS:
-                case PARAMS:
-                case LPA:
-                    App.listReportParams(config, new File(config.getInput()).getAbsoluteFile());
-                    break;
-            }
-        } catch (IllegalArgumentException ex) {
-            System.err.println(ex.getMessage());
-            System.exit(1);
-        } catch (InterruptedException ex) {
-            System.err.println(ex.getMessage());
-            System.exit(1);
-        } catch (JRException ex) {
-            System.err.println(ex.getMessage());
-            System.exit(1);
-        }
+		switch (Command.getCommand(config.getCommand())) {
+			case COMPILE:
+			case CP:
+				app.compile(config);
+				break;
+			case PROCESS:
+			case PR:
+				app.processReport(config);
+				break;
+			case LIST_PRINTERS:
+			case PRINTERS:
+			case LPR:
+				app.listPrinters();
+				break;
+			case LIST_PARAMETERS:
+			case PARAMS:
+			case LPA:
+				app.listReportParams(config, new File(config.getInput()).getAbsoluteFile());
+				break;
+		}
     }
 
     private void compile(Config config) {
@@ -140,7 +207,7 @@ public class App {
             File[] files = input.listFiles(fileFilter);
             for (File file : files) {
                 try {
-                    System.out.println("Compiling: \"" + file + "\"");
+                    this.out.println("Compiling: \"" + file + "\"");
                     Report report = new Report(config, file);
                     report.compileToFile();
                 } catch (IllegalArgumentException ex) {
@@ -162,7 +229,7 @@ public class App {
             if (config.hasJdbcDir()) {
                 File jdbcDir = config.getJdbcDir();
                 if (config.isVerbose()) {
-                    System.out.println("Using jdbc-dir: " + jdbcDir.getAbsolutePath());
+                    this.out.println("Using jdbc-dir: " + jdbcDir.getAbsolutePath());
                 }
                 ApplicationClasspath.addJars(jdbcDir.getAbsolutePath());
             } else {
@@ -183,7 +250,7 @@ public class App {
                     if (res.isDirectory()) {
                         ApplicationClasspath.add(res);
                         if (config.isVerbose()) {
-                            System.out.println(
+                            this.out.println(
                                     "Added resource \"" + res + "\" to classpath");
                         }
                     } else {
@@ -195,7 +262,7 @@ public class App {
                     File res = new File(config.getResource());
                     ApplicationClasspath.add(res);
                     if (config.isVerbose()) {
-                        System.out.println(
+                        this.out.println(
                                 "Added resource \"" + res + "\" to classpath");
                     }
                 }
@@ -206,11 +273,11 @@ public class App {
         }
         File inputFile = new File(config.getInput()).getAbsoluteFile();
         if (config.isVerbose()) {
-            System.out.println("Original input file: " + inputFile.getAbsolutePath());
+            this.out.println("Original input file: " + inputFile.getAbsolutePath());
         }
         inputFile = locateInputFile(inputFile);
         if (config.isVerbose()) {
-            System.out.println("Using input file: " + inputFile.getAbsolutePath());
+            this.out.println("Using input file: " + inputFile.getAbsolutePath());
         }
         Report report = new Report(config, inputFile);
 
@@ -304,15 +371,15 @@ public class App {
 
     private void listPrinters() {
         PrintService defaultService = PrintServiceLookup.lookupDefaultPrintService();
-        System.out.println("Default printer:");
-        System.out.println("-----------------");
-        System.out.println((defaultService == null) ? "--- not set ---" : defaultService.getName());
-        System.out.println("");
+        this.out.println("Default printer:");
+        this.out.println("-----------------");
+        this.out.println((defaultService == null) ? "--- not set ---" : defaultService.getName());
+        this.out.println("");
         PrintService[] services = PrintServiceLookup.lookupPrintServices(null, null);
-        System.out.println("Available printers:");
-        System.out.println("--------------------");
+        this.out.println("Available printers:");
+        this.out.println("--------------------");
         for (PrintService service : services) {
-            System.out.println(service.getName());
+            this.out.println(service.getName());
         }
     }
 
@@ -486,7 +553,7 @@ public class App {
     /**
      * @return the namespace
      */
-    public static void listReportParams(Config config, File input) throws IllegalArgumentException {
+    public void listReportParams(Config config, File input) throws IllegalArgumentException {
         boolean all;
         Report report = new Report(config, input);
         JRParameter[] params = report.getReportParameters();
@@ -510,7 +577,7 @@ public class App {
         }
         for (JRParameter param : params) {
             if (!param.isSystemDefined() || all) {
-                System.out.printf("%s %-" + maxName + "s %-" + maxClassName + "s %-" + maxDesc + "s %n",
+                this.out.format("%s %-" + maxName + "s %-" + maxClassName + "s %-" + maxDesc + "s %n",
                         //(param.isSystemDefined() ? "S" : "U"),
                         (param.isForPrompting() ? "P" : "N"),
                         param.getName(),
