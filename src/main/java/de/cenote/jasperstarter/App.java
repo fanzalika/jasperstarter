@@ -118,9 +118,16 @@ public class App {
 					
 					String[] arguments=input.split(" ");
 					System.out.println("Client #"+clientNumber+" invoked command:" + input);
-					
-					App.process(arguments, out);
+				
+					try {
+						App.process(arguments, out);
+						out.println("SUCCESS");
+					} catch (Exception e) {
+						System.out.println("Error handling request from client# " + clientNumber + ": " + e);
+						out.println("ERROR: " + e);
+					}
 				}
+				out.println("BYE");
 				
             } catch (IOException e) {
                 System.out.println("Error handling client# " + clientNumber + ": " + e);
